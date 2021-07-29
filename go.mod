@@ -1,4 +1,4 @@
-module k3sbase
+module k3sdeploy
 
 go 1.16
 
