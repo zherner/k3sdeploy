@@ -14,7 +14,8 @@ import (
 // and credentials values from the environment variables, shared
 // credentials, and shared configuration files
 func initAWS() aws.Config {
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	//TODO input var for region pass in as config.LoadDefaultConfig(context.TODO(),config.WithRegion(region))
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		log.Fatalf("unable to load SDK config, %v", err)
 	}

@@ -5,29 +5,32 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
 
-// to be inputs
-var (
-	region = "us-east-2"
-)
+// documentation
+// https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/service/ec2
 
 // cfg is the config object for service
 type cfg struct {
-	count   int32
-	name    string
-	key     string
-	subnets string
-	del     bool
+	count       int32
+	clusterName string
+	key         string
+	keyPath     string
+	subnets     string
+	del         bool
 }
 
+// getK3sConfig parses input flags to set config object for k3s
 func getK3sConfig() *cfg {
 	// define input flags, empty default values so that ENV vars can be
 	// used to set flags
 	count := flag.String("c", "", "The number of k3s cluster instances.")
 	name := flag.String("n", "", "The name of the k3s cluster")
-	key := flag.String("k", "", "The name of the ssh key to ues when provisioning instances.")
+	key := flag.String("k", "", "The full path to the ssh key to ues when provisioning instances.")
 	subnets := flag.String("s", "", "Comma separated list of subnets-ids to place instances in.")
 	// delete input
 	delName := flag.String("d", "", "The name of the cluster to terminate.")
@@ -44,10 +47,9 @@ func getK3sConfig() *cfg {
 	// do delete if specified
 	if *delName != "" {
 		c := cfg{
-			name: *delName,
-			del:  true,
+			clusterName: *delName,
+			del:         true,
 		}
-
 		return &c
 	}
 
@@ -96,10 +98,11 @@ func getK3sConfig() *cfg {
 	n = int32(num)
 
 	c := cfg{
-		count:   n,
-		name:    *name,
-		key:     *key,
-		subnets: *subnets,
+		count:       n,
+		clusterName: *name,
+		key:         strings.TrimSuffix(path.Base(*key), filepath.Ext(path.Base(*key))),
+		keyPath:     *key,
+		subnets:     *subnets,
 	}
 	return &c
 }
@@ -120,6 +123,9 @@ func main() {
 		terminateSequence(awscfg, k3scfg)
 	}
 
+	// add gey to agent
+	go sshAgent(k3scfg.keyPath)
+
 	// create cluster
-	createInstance(awscfg, k3scfg)
+	createInstances(awscfg, k3scfg)
 }

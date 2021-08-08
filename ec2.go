@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -12,17 +13,18 @@ import (
 )
 
 var (
-	userData = `
+	k3sInstall = `
 #!/usr/bin/env bash
-curl -sfL https://get.k3s.io | sh -
-`
+curl -sfL https://get.k3s.io`
+
 	//subnet         = "subnet-017584c03579c5d3e"
-	amiID          = "ami-0233c2d874b811deb"
-	tagName        = "Name"
-	tagSource      = "source"
-	tagSourceValue = "https://github.com/zherner/k3sbase"
-	tagK3sdeploy   = "k3sdeploy"
-	tagTrueValue   = "true"
+	amiID               = "ami-0233c2d874b811deb"
+	tagName             = "Name"
+	tagK3sdeploycluster = "k3sdeploycluster"
+	tagSource           = "source"
+	tagSourceValue      = "https://github.com/zherner/k3sdeploy"
+	tagK3sdeploy        = "k3sdeploy"
+	tagTrueValue        = "true"
 )
 
 //
@@ -32,7 +34,7 @@ func b64(str string) *string {
 }
 
 // tagInstance takes a slice of instanceIds and tags them
-func tagInstance(client *ec2.Client, instances []types.Instance, name string) {
+func tagInstance(client *ec2.Client, instances []types.Instance, clusterName, name string) {
 
 	for _, v := range instances {
 		tagInput := &ec2.CreateTagsInput{
@@ -41,6 +43,10 @@ func tagInstance(client *ec2.Client, instances []types.Instance, name string) {
 				{
 					Key:   &tagName,
 					Value: &name,
+				},
+				{
+					Key:   &tagK3sdeploycluster,
+					Value: &clusterName,
 				},
 				{
 					Key:   &tagSource,
@@ -63,7 +69,7 @@ func tagInstance(client *ec2.Client, instances []types.Instance, name string) {
 	}
 }
 
-// createSGRules
+// createSGRules creates the needed rules on the instance SG
 func createSGRules(client *ec2.Client, id string) {
 	// ingress
 
@@ -126,20 +132,24 @@ func createSGRules(client *ec2.Client, id string) {
 }
 
 // createSG creates the Security Group with needed SG input and output rules.
-func createSG(client *ec2.Client, k3scfg *cfg, vpcID string) []string {
-	Description := k3scfg.name + " - SHG"
+func createSG(client *ec2.Client, clusterName, name, vpcID string) string {
+	sgName := name + "-sg"
 
 	// inputs for the SG (not the rules)
 	sgInput := &ec2.CreateSecurityGroupInput{
-		Description: &Description,
-		GroupName:   &k3scfg.name,
+		Description: &sgName,
+		GroupName:   &sgName,
 		TagSpecifications: []types.TagSpecification{
 			{
 				ResourceType: types.ResourceType("security-group"),
 				Tags: []types.Tag{
 					{
 						Key:   &tagName,
-						Value: &k3scfg.name,
+						Value: &sgName,
+					},
+					{
+						Key:   &tagK3sdeploycluster,
+						Value: &clusterName,
 					},
 					{
 						Key:   &tagSource,
@@ -163,13 +173,8 @@ func createSG(client *ec2.Client, k3scfg *cfg, vpcID string) []string {
 
 	log.Printf("Created Security Group with ID: %q\n", *result.GroupId)
 
-	// create SG rules
-	createSGRules(client, *result.GroupId)
-
-	log.Printf("Created Security Group ingress and egress rules on for Security Group with ID: %q\n", *result.GroupId)
-
 	// TODO: stop returning one group ID as slice for RunInstancesInput
-	return []string{*result.GroupId}
+	return *result.GroupId
 }
 
 // valSubnets validates subnet-ids exist
@@ -197,9 +202,12 @@ func valSubnets(client *ec2.Client, k3scfg *cfg) (string, []string) {
 }
 
 // createInstance creates count amount of EC2 instances and attempts to tag them
-func createInstance(awscfg aws.Config, k3scfg *cfg) {
+func createInstances(awscfg aws.Config, k3scfg *cfg) {
+	//_ = sshExtractToken(awscfg, k3scfg)
+	//return
+
 	// print creating
-	log.Printf("Deploying internal cluster %q with %q instances.\n", k3scfg.name, k3scfg.count)
+	log.Printf("Deploying internal cluster %q with %d instances.\n", k3scfg.clusterName, k3scfg.count)
 
 	// Using the Config value, create the s3 client
 	client := ec2.NewFromConfig(awscfg)
@@ -207,25 +215,47 @@ func createInstance(awscfg aws.Config, k3scfg *cfg) {
 	// validate subnet-ids
 	vpcID, subnets := valSubnets(client, k3scfg)
 
+	// create bastion
+	createBastion(client, k3scfg, vpcID)
+
 	// create SGs for k3s
 	// https://rancher.com/docs/k3s/latest/en/installation/installation-requirements/#networking
-	id := createSG(client, k3scfg, vpcID)
+	idSG := createSG(client, k3scfg.clusterName, k3scfg.clusterName, vpcID)
 
+	// create SG rules for instances
+	createSGRules(client, idSG)
+
+	log.Printf("Created Security Group ingress and egress rules on for Security Group with ID: %q\n", idSG)
 	// inputs
 
 	// use one for min and max since we want to create one instance at a time in each subnet
 	one := int32(1)
 	j := 0
+	userData := ""
+	ipClusterMain := ""
+	k3sClusterToken := ""
 
 	// loop over instance count and spread instances over the number of subnets provided.
 	for i := int32(1); i <= k3scfg.count; i++ {
+
+		// used in tagInstance to add to name a count of instances -01 -02 -03 etc
+		nameAppend := "-worker-0" + strconv.Itoa(int(i)-1)
+
+		// tag the first node as -main instead
+		if i == 1 {
+			nameAppend = "-main"
+			userData = k3sInstall + " | sh -"
+		} else {
+			userData = k3sInstall + " | K3S_URL=https://" + ipClusterMain + ":6443" + " K3S_TOKEN=" + k3sClusterToken + " sh - "
+		}
+
 		runInput := &ec2.RunInstancesInput{
-			ImageId:          aws.String(amiID),
+			ImageId:          &amiID,
 			InstanceType:     types.InstanceTypeT2Micro,
 			KeyName:          &k3scfg.key,
 			MinCount:         &one,
 			MaxCount:         &one,
-			SecurityGroupIds: id,
+			SecurityGroupIds: []string{idSG},
 			SubnetId:         &subnets[j],
 			UserData:         b64(userData),
 		}
@@ -239,9 +269,19 @@ func createInstance(awscfg aws.Config, k3scfg *cfg) {
 		// tag the instance after creation
 		for _, v := range result.Instances {
 			log.Printf("Created instnace with ID: %q - PrivateIP: %q\n", *v.InstanceId, *v.PrivateIpAddress)
+			if i == 1 {
+				ipClusterMain = *v.PrivateIpAddress
+			}
 		}
-		tagInstance(client, result.Instances, k3scfg.name)
 
+		tagInstance(client, result.Instances, k3scfg.clusterName, k3scfg.clusterName+nameAppend)
+
+		// extract token after cluster main is created
+		if i == 1 {
+			k3sClusterToken = sshExtractToken(awscfg, k3scfg)
+		}
+
+		// get first (main) instance id
 		// if times iterated through subnets is equal to len of subnets, reset index j
 		// so that we can somewhat evenly spread instances to subnets.
 		if j+1 == len(subnets) {
