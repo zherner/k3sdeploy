@@ -370,5 +370,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 		}
 	}
 
-	fmt.Printf("\n ssh -NT -L 6443:%s:6443 ec2-user@%s\n", ipClusterMain, ipBastion)
+	fmt.Println("Run the following to SSH forward via the bastion to the K3s cluster main.")
+	fmt.Printf("\nssh -NT -L 6443:%s:6443 ec2-user@%s\n", ipClusterMain, ipBastion)
+    fmt.Println("Run 'KUBECONIFG=./k3s_kubeconfig kubectl get ns' to get started.")
 }
