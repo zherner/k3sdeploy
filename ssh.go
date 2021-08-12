@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,7 +12,7 @@ import (
 	"time"
 )
 
-func sshExtractKubeConfig(ipBastion, ipClusterMain string) []byte {
+func sshExtractKubeConfig(ipBastion, ipClusterMain, clusterName string) []byte {
 	// shell command via ssh proxy to get kubeconfig
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15000*time.Millisecond)
@@ -36,97 +35,43 @@ func sshExtractKubeConfig(ipBastion, ipClusterMain string) []byte {
 	if len(out) < 50 {
 		log.Fatalf("Something went wrong, expecting long token string.\n")
 	}
-	return out
+
+	// replace default with cluster name and loopback ip with cluster main ip
+	kubecfg := strings.Replace(string(out), "default", clusterName, -1)
+	return []byte(kubecfg)
 }
 
-func sshExtractToken(awscfg aws.Config, k3scfg *cfg) string {
-	// TODO: loop to get instance status instead of sleeping
-	// sleep to wait for instances to be available
-	time.Sleep(time.Second * 60)
+func sshExtractToken(awscfg aws.Config, k3scfg *cfg, idBastion, idMain string) string {
+	log.Println("Getting K3s token.")
 
 	// Using the Config value, create the s3 client
 	client := ec2.NewFromConfig(awscfg)
 
-	// init
-	var ipBastion string
-	var ipClusterMain string
+	// lookup instances
+	_, _, _, ipBastion := describeInstance(client, k3scfg, "-bastion", idBastion)
 
-	// filter inputs must be prepended with "tag:"
-	var tagK3sdeploycluster = "tag:" + tagK3sdeploycluster
-	var tagKey = "tag:" + tagK3sdeploy
-	var tagTagName = "tag:" + tagName
+	// loop waiting for instance state
+	var ipClusterMain []string
+	var inState []int32
+	numChecks := 45
 
-	describeInput := &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			{
-				Name:   &tagTagName,
-				Values: []string{k3scfg.clusterName + "-bastion"},
-			},
-			{
-				Name:   &tagK3sdeploycluster,
-				Values: []string{k3scfg.clusterName},
-			},
-			{
-				Name:   &tagKey,
-				Values: []string{tagTrueValue},
-			},
-		},
-	}
-
-	result, err := client.DescribeInstances(context.TODO(), describeInput)
-	if err != nil {
-		log.Fatalf("failed to describe instance, %v", err)
-	}
-
-	// loop over results to get matching instance id in a running state
-	for _, v := range result.Reservations {
-		for _, k := range v.Instances {
-			// 16 - running, 0 - pending
-			if *k.State.Code == 16 || *k.State.Code == 0 {
-				ipBastion = *k.PublicIpAddress
-			}
+	log.Println("Waiting on instance state of 'ready'.")
+	for i := 1; i <= numChecks; i++ {
+		_, inState, ipClusterMain, _ = describeInstance(client, k3scfg, "-main", idMain)
+		if inState[0] == 16 {
+			break
 		}
+		time.Sleep(time.Second * 2)
+	}
+	if ipClusterMain[0] == "" {
+		log.Fatalf("failed to get instance state of 'ready' for instance with id %q\n", idMain)
 	}
 
-	// main
-	describeInput = &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			{
-				Name:   &tagTagName,
-				Values: []string{k3scfg.clusterName + "-main"},
-			},
-			{
-				Name:   &tagK3sdeploycluster,
-				Values: []string{k3scfg.clusterName},
-			},
-			{
-				Name:   &tagKey,
-				Values: []string{tagTrueValue},
-			},
-		},
-	}
-
-	result, err = client.DescribeInstances(context.TODO(), describeInput)
-	if err != nil {
-		log.Fatalf("failed to describe instance, %v", err)
-	}
-
-	// loop over results to get matching instance id in a running state
-	for _, v := range result.Reservations {
-		for _, k := range v.Instances {
-			// 16 - running, 0 - pending
-			if *k.State.Code == 16 || *k.State.Code == 0 {
-				ipClusterMain = *k.PrivateIpAddress
-			}
-		}
-	}
+	// sleep a few seconds to give instance time to be able to run ssh command
 
 	// shell command via ssh proxy to get token
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15000*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 80000*time.Millisecond)
 	defer cancel()
-
-	log.Println("Getting K3s token.")
 
 	//cmd := exec.CommandContext(ctx, "ssh",
 	//	"-A",
@@ -140,31 +85,46 @@ func sshExtractToken(awscfg aws.Config, k3scfg *cfg) string {
 	// breaking this up in to two steps to avoid the fingerprint confirm
 	// interaction, which should be turned off with StrictHostKeyChecking=no
 	// but still being prompted.
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-A",
-		"-o", "StrictHostKeyChecking=no",
-		"ec2-user@"+ipBastion,
-	)
-	// have to run something to auto accept the key
-	out, err := cmd.Output()
-	cmd = exec.CommandContext(ctx, "ssh",
-		"-A",
-		"-o", "StrictHostKeyChecking=no",
-		"-J", "ec2-user@"+ipBastion,
-		"ec2-user@"+ipClusterMain,
-		"sudo cat /var/lib/rancher/k3s/server/node-token",
-	)
-	// finally get token as output
-	out, err = cmd.Output()
+	var out []byte
+	var err error
+	numSSHChecks := 10
+	for i := 1; i <= numSSHChecks; i++ {
+		cmd := exec.CommandContext(ctx, "ssh",
+			"-A",
+			"-o", "StrictHostKeyChecking=no",
+			"ec2-user@"+ipBastion[0],
+		)
+		_, err := cmd.Output()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second * 2)
+	}
+
+	for i := 1; i <= numSSHChecks; i++ {
+		cmd := exec.CommandContext(ctx, "ssh",
+			"-A",
+			"-o", "StrictHostKeyChecking=no",
+			"-J", "ec2-user@"+ipBastion[0],
+			"ec2-user@"+ipClusterMain[0],
+			"sudo cat /var/lib/rancher/k3s/server/node-token",
+		)
+		out, err = cmd.Output()
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second * 2)
+	}
+
 	if err != nil {
-		log.Fatalf("failed to get k3s token from k3s main %q via bastion %q , %v", ipClusterMain, ipBastion, err)
+		log.Fatalf("failed to get k3s token from k3s main %q via bastion %q , %v", ipClusterMain[0], ipBastion[0], err)
 	}
 	if len(out) < 50 {
 		log.Fatalf("Something went wrong, expecting long token string.\n")
 	}
 
 	// get kubeconfig and write to file
-	err = ioutil.WriteFile("./k3s_kubeconfig", sshExtractKubeConfig(ipBastion, ipClusterMain), 0644)
+	err = ioutil.WriteFile("./k3s_kubeconfig", sshExtractKubeConfig(ipBastion[0], ipClusterMain[0], k3scfg.clusterName), 0644)
 	if err != nil {
 		log.Fatalf("Failed to write kubeconfig.\n")
 	}

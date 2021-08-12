@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 // createBastionSGRules creates the needed rules on the bastion SG
@@ -129,7 +130,7 @@ func getIP() string {
 }
 
 // createInstance creates count amount of EC2 instances and attempts to tag them
-func createBastion(client *ec2.Client, k3scfg *cfg, vpcID string) {
+func createBastion(client *ec2.Client, k3scfg *cfg, vpcID string) (id, ip string) {
 	// print creating
 	log.Printf("Creating bastion node %q for cluster %q.\n", k3scfg.clusterName+"-bastion", k3scfg.clusterName)
 
@@ -166,9 +167,28 @@ func createBastion(client *ec2.Client, k3scfg *cfg, vpcID string) {
 	}
 
 	// tag the instance after creation
-	for _, v := range result.Instances {
-		//fmt.Printf("%#v\n", v)
-		log.Printf("Created bastion instance with ID: %q - PublicIP: %q\n", *v.InstanceId, *v.PublicDnsName)
-	}
 	tagInstance(client, result.Instances, k3scfg.clusterName, k3scfg.clusterName+"-bastion")
+
+	// loop waiting for instance state
+	var ipBastion []string
+	numChecks := 45
+
+	log.Println("Waiting on instance to attach public ip.")
+	for i := 1; i <= numChecks; i++ {
+		_, _, _, ipBastion = describeInstance(client, k3scfg, "-bastion", *result.Instances[0].InstanceId)
+		if ipBastion[0] != "" {
+			break
+		}
+		time.Sleep(time.Second * 2)
+	}
+	if ipBastion[0] == "" {
+		log.Fatalf("failed to get instance state of 'ready' for instance with id %q\n", *result.Instances[0].InstanceId)
+	}
+
+	for _, v := range result.Instances {
+		id = *v.InstanceId
+		log.Printf("Created bastion instance with ID: %q - PublicIP: %q\n", id, ipBastion[0])
+	}
+
+	return id, ipBastion[0]
 }

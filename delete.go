@@ -18,44 +18,6 @@ const (
 	resetText = "\033[0m"
 )
 
-// describeInstance returns instance ids created by this tool and associated with the cluster name
-func describeInstance(client *ec2.Client, k3scfg *cfg) (ids []string) {
-
-	// inputs
-	var tagK3sdeploycluster = "tag:" + tagK3sdeploycluster
-	var tagKey = "tag:" + tagK3sdeploy
-
-	describeInput := &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			{
-				Name:   &tagK3sdeploycluster,
-				Values: []string{k3scfg.clusterName},
-			},
-			{
-				Name:   &tagKey,
-				Values: []string{tagTrueValue},
-			},
-		},
-	}
-
-	result, err := client.DescribeInstances(context.TODO(), describeInput)
-	if err != nil {
-		log.Fatalf("failed to describe instance, %v", err)
-	}
-
-	// loop over results to get matching instance id in a running state
-	for _, v := range result.Reservations {
-		for _, k := range v.Instances {
-			// 16 - running, 0 - pending
-			if *k.State.Code == 16 {
-				ids = append(ids, *k.InstanceId)
-			}
-		}
-	}
-
-	return ids
-}
-
 // terminateInstance destroys the instance with id
 func terminateInstance(client *ec2.Client, id string) {
 
@@ -141,7 +103,7 @@ func terminateSequence(awscfg aws.Config, k3scfg *cfg) {
 	client := ec2.NewFromConfig(awscfg)
 
 	// lookup instances
-	idsIn := describeInstance(client, k3scfg)
+	idsIn, _, _, _ := describeInstance(client, k3scfg, "", "")
 
 	// lookup sgs
 	idsSG := describeSG(client, k3scfg)
@@ -171,25 +133,32 @@ func terminateSequence(awscfg aws.Config, k3scfg *cfg) {
 
 	if usrInput == "YES" {
 		log.Printf("Destroying cluster %q\n", k3scfg.clusterName)
-		// destroy instances
+		if len(idsIn) != 0 || len(idsSG) != 0 {
+			// destroy instances
+			for _, v := range idsIn {
+				terminateInstance(client, v)
+
+				// wait
+				numChecks := 45
+				log.Println("Waiting on instance state of 'terminated'.")
+				for i := 1; i <= numChecks; i++ {
+					_, inState, _, _ := describeInstance(client, k3scfg, "", v)
+					if inState[0] == 48 {
+						break
+					}
+					time.Sleep(time.Second * 2)
+				}
+			}
+			// destory sgs
+			for _, v := range idsSG {
+				deleteSG(client, v)
+			}
+		}
 		if len(idsIn) == 0 {
 			fmt.Printf("\nNo instances in a running state found associated with the %q cluster. Skipping.\n", k3scfg.clusterName)
 		}
-		for _, v := range idsIn {
-			terminateInstance(client, v)
-		}
-		// destory sgs
 		if len(idsSG) == 0 {
 			fmt.Printf("\nNo security grups found associated with the %q cluster. Skipping.\n", k3scfg.clusterName)
-		}
-		// hard sleep so instances can be terminated state so SG isnt blocked on dependency
-		if len(idsIn) != 0 {
-			sleep := time.Second * 60
-			log.Printf("Hard sleeping for %q to allow instances to enter term state so the security group(s) can be deleted.\n", sleep)
-			time.Sleep(sleep)
-		}
-		for _, v := range idsSG {
-			deleteSG(client, v)
 		}
 
 	}

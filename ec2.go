@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -25,9 +26,84 @@ curl -sfL https://get.k3s.io`
 	tagSourceValue      = "https://github.com/zherner/k3sdeploy"
 	tagK3sdeploy        = "k3sdeploy"
 	tagTrueValue        = "true"
+	instanceID          = "instance-id"
 )
 
-//
+// describeInstance returns instance ids created by this tool and associated with the cluster name
+func describeInstance(client *ec2.Client, k3scfg *cfg, name, idIn string) (ids []string, state []int32, ipPri, ipPub []string) {
+
+	// filter inputs must be prepended with "tag:"
+	var tagK3sdeploycluster = "tag:" + tagK3sdeploycluster
+	var tagKey = "tag:" + tagK3sdeploy
+	var tagTagName = "tag:" + tagName
+	//var idsIn = []string{}
+
+	filters := []types.Filter{
+		{
+			Name:   &tagK3sdeploycluster,
+			Values: []string{k3scfg.clusterName},
+		},
+		{
+			Name:   &tagKey,
+			Values: []string{tagTrueValue},
+		},
+	}
+
+	if name != "" {
+		filters = append(filters, types.Filter{
+			Name:   &tagTagName,
+			Values: []string{k3scfg.clusterName + name},
+		})
+	}
+
+	if idIn != "" {
+		filters = append(filters, types.Filter{
+			Name:   &instanceID,
+			Values: []string{idIn},
+		})
+		//idsIn = []string{idIn}
+	}
+
+	describeInput := &ec2.DescribeInstancesInput{
+		Filters: filters,
+		//InstanceIds: idsIn,
+	}
+
+	result, err := client.DescribeInstances(context.TODO(), describeInput)
+	if err != nil {
+		log.Fatalf("failed to describe instance, %v", err)
+	}
+
+	// loop over results to get matching instance id in a running state
+	// should be only one result if using idIn (instance-id as input)
+	for _, v := range result.Reservations {
+		for _, k := range v.Instances {
+			// 16 - running, 0 - pending, 48 - terminated
+			if *k.State.Code == 48 {
+				state = append(state, *k.State.Code)
+				// skip the rest for intsances already in terminated state
+				continue
+			}
+			state = append(state, *k.State.Code)
+			ids = append(ids, *k.InstanceId)
+			if k.PrivateIpAddress == nil {
+				ipPri = append(ipPri, "")
+			} else {
+				ipPri = append(ipPri, *k.PrivateIpAddress)
+			}
+			if *k.PublicDnsName == "" {
+				ipPub = append(ipPub, "")
+			} else {
+				ipPub = append(ipPub, *k.PublicIpAddress)
+			}
+			//}
+		}
+	}
+
+	return ids, state, ipPri, ipPub
+}
+
+// b64 base64 encodes a string
 func b64(str string) *string {
 	enc := base64.StdEncoding.EncodeToString([]byte(str))
 	return &enc
@@ -203,7 +279,8 @@ func valSubnets(client *ec2.Client, k3scfg *cfg) (string, []string) {
 
 // createInstance creates count amount of EC2 instances and attempts to tag them
 func createInstances(awscfg aws.Config, k3scfg *cfg) {
-	//_ = sshExtractToken(awscfg, k3scfg)
+	// for debuggin ssh
+	//_ = sshExtractToken(awscfg, k3scfg, "i-05d25082d445d76df", "i-018e690a621877f4d")
 	//return
 
 	// print creating
@@ -216,7 +293,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 	vpcID, subnets := valSubnets(client, k3scfg)
 
 	// create bastion
-	createBastion(client, k3scfg, vpcID)
+	idBastion, ipBastion := createBastion(client, k3scfg, vpcID)
 
 	// create SGs for k3s
 	// https://rancher.com/docs/k3s/latest/en/installation/installation-requirements/#networking
@@ -233,6 +310,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 	j := 0
 	userData := ""
 	ipClusterMain := ""
+	idClusterMain := ""
 	k3sClusterToken := ""
 
 	// loop over instance count and spread instances over the number of subnets provided.
@@ -246,7 +324,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 			nameAppend = "-main"
 			userData = k3sInstall + " | sh -"
 		} else {
-			userData = k3sInstall + " | K3S_URL=https://" + ipClusterMain + ":6443" + " K3S_TOKEN=" + k3sClusterToken + " sh - "
+			userData = k3sInstall + " | K3S_URL=https://" + ipClusterMain + ":6443" + " K3S_TOKEN=" + k3sClusterToken + " sh -"
 		}
 
 		runInput := &ec2.RunInstancesInput{
@@ -271,6 +349,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 			log.Printf("Created instnace with ID: %q - PrivateIP: %q\n", *v.InstanceId, *v.PrivateIpAddress)
 			if i == 1 {
 				ipClusterMain = *v.PrivateIpAddress
+				idClusterMain = *v.InstanceId
 			}
 		}
 
@@ -278,7 +357,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 
 		// extract token after cluster main is created
 		if i == 1 {
-			k3sClusterToken = sshExtractToken(awscfg, k3scfg)
+			k3sClusterToken = sshExtractToken(awscfg, k3scfg, idBastion, idClusterMain)
 		}
 
 		// get first (main) instance id
@@ -291,4 +370,5 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 		}
 	}
 
+	fmt.Printf("\n ssh -NT -L 6443:%s:6443 ec2-user@%s\n", ipClusterMain, ipBastion)
 }
