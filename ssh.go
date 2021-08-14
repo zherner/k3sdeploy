@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+// sshExtractKubeConfig will shell in to the cluster main via bastion to
+// pull out the kubeconfig and replace 'default' with cluster main in local copy
 func sshExtractKubeConfig(ipBastion, ipClusterMain, clusterName string) []byte {
 	// shell command via ssh proxy to get kubeconfig
 
@@ -41,6 +43,8 @@ func sshExtractKubeConfig(ipBastion, ipClusterMain, clusterName string) []byte {
 	return []byte(kubecfg)
 }
 
+// sshExtractToken ssh in to cluster main via the bastion to extract the k3s cluster token value
+// needed by worker nodes to join the cluster.
 func sshExtractToken(awscfg aws.Config, k3scfg *cfg, idBastion, idMain string) string {
 	log.Println("Getting K3s token.")
 

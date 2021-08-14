@@ -18,16 +18,65 @@ var (
 #!/usr/bin/env bash
 curl -sfL https://get.k3s.io`
 
-	//subnet         = "subnet-017584c03579c5d3e"
-	amiID               = "ami-0233c2d874b811deb"
 	tagName             = "Name"
 	tagK3sdeploycluster = "k3sdeploycluster"
 	tagSource           = "source"
 	tagSourceValue      = "https://github.com/zherner/k3sdeploy"
 	tagK3sdeploy        = "k3sdeploy"
 	tagTrueValue        = "true"
-	instanceID          = "instance-id"
 )
+
+// describeAmi uses a set of filters to determine what AMI ID to use for latest amzn linux v2
+func describeAMI(client *ec2.Client) string {
+	// inputs
+	var name = "name"
+	var state = "state"
+	var architecture = "architecture"
+	var ownerAlias = "owner-alias"
+	var platform = "platform-details"
+
+	imagesInput := &ec2.DescribeImagesInput{
+		//Owners: "137112412989"
+		Filters: []types.Filter{
+			{
+				Name:   &name,
+				Values: []string{"amzn2-ami-hvm*"},
+			},
+			{
+				Name:   &state,
+				Values: []string{"available"},
+			},
+			{
+				Name:   &architecture,
+				Values: []string{"x86_64"},
+			},
+			{
+				Name:   &ownerAlias,
+				Values: []string{"amazon"},
+			},
+			{
+				Name:   &platform,
+				Values: []string{"Linux/UNIX"},
+			},
+		},
+	}
+
+	// Build the request with its input parameters
+	result, err := client.DescribeImages(context.TODO(), imagesInput)
+	if err != nil {
+		log.Fatalf("failed to get latest Amazon AMI ID, %v", err)
+	}
+
+	// get the ami result with latest creation date.
+	latest := result.Images[0]
+	fmt.Println("start", *latest.Name, *latest.ImageId, *latest.CreationDate)
+	for _, v := range result.Images {
+		if *latest.CreationDate < *v.CreationDate {
+			latest = v
+		}
+	}
+	return *latest.ImageId
+}
 
 // describeInstance returns instance ids created by this tool and associated with the cluster name
 func describeInstance(client *ec2.Client, k3scfg *cfg, name, idIn string) (ids []string, state []int32, ipPri, ipPub []string) {
@@ -36,6 +85,8 @@ func describeInstance(client *ec2.Client, k3scfg *cfg, name, idIn string) (ids [
 	var tagK3sdeploycluster = "tag:" + tagK3sdeploycluster
 	var tagKey = "tag:" + tagK3sdeploy
 	var tagTagName = "tag:" + tagName
+	var instanceID = "instance-id"
+
 	//var idsIn = []string{}
 
 	filters := []types.Filter{
@@ -278,8 +329,8 @@ func valSubnets(client *ec2.Client, k3scfg *cfg) (string, []string) {
 }
 
 // createInstance creates count amount of EC2 instances and attempts to tag them
-func createInstances(awscfg aws.Config, k3scfg *cfg) {
-	// for debuggin ssh
+func createCluster(awscfg aws.Config, k3scfg *cfg) {
+	// for debugging ssh
 	//_ = sshExtractToken(awscfg, k3scfg, "i-05d25082d445d76df", "i-018e690a621877f4d")
 	//return
 
@@ -292,8 +343,11 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 	// validate subnet-ids
 	vpcID, subnets := valSubnets(client, k3scfg)
 
+	// find latest AMI
+	idAMI := describeAMI(client)
+
 	// create bastion
-	idBastion, ipBastion := createBastion(client, k3scfg, vpcID)
+	idBastion, ipBastion := createBastion(client, k3scfg, vpcID, idAMI)
 
 	// create SGs for k3s
 	// https://rancher.com/docs/k3s/latest/en/installation/installation-requirements/#networking
@@ -328,7 +382,7 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 		}
 
 		runInput := &ec2.RunInstancesInput{
-			ImageId:          &amiID,
+			ImageId:          &idAMI,
 			InstanceType:     types.InstanceTypeT2Micro,
 			KeyName:          &k3scfg.key,
 			MinCount:         &one,
@@ -372,5 +426,5 @@ func createInstances(awscfg aws.Config, k3scfg *cfg) {
 
 	fmt.Println("Run the following to SSH forward via the bastion to the K3s cluster main.")
 	fmt.Printf("\nssh -NT -L 6443:%s:6443 ec2-user@%s\n", ipClusterMain, ipBastion)
-    fmt.Println("Run 'KUBECONIFG=./k3s_kubeconfig kubectl get ns' to get started.")
+	fmt.Println("Run 'KUBECONIFG=./k3s_kubeconfig kubectl get ns' to get started.")
 }

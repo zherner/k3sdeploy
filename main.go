@@ -12,6 +12,7 @@ import (
 )
 
 // documentation
+// https://aws.github.io/aws-sdk-go-v2/docs/code-examples/
 // https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/service/ec2
 
 // cfg is the config object for service
@@ -127,5 +128,5 @@ func main() {
 	go sshAgent(k3scfg.keyPath)
 
 	// create cluster
-	createInstances(awscfg, k3scfg)
+	createCluster(awscfg, k3scfg)
 }

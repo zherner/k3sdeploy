@@ -130,7 +130,7 @@ func getIP() string {
 }
 
 // createInstance creates count amount of EC2 instances and attempts to tag them
-func createBastion(client *ec2.Client, k3scfg *cfg, vpcID string) (id, ip string) {
+func createBastion(client *ec2.Client, k3scfg *cfg, vpcID, idAMI string) (id, ip string) {
 	// print creating
 	log.Printf("Creating bastion node %q for cluster %q.\n", k3scfg.clusterName+"-bastion", k3scfg.clusterName)
 
@@ -151,7 +151,7 @@ func createBastion(client *ec2.Client, k3scfg *cfg, vpcID string) (id, ip string
 	one := int32(1)
 
 	runInput := &ec2.RunInstancesInput{
-		ImageId:          &amiID,
+		ImageId:          &idAMI,
 		InstanceType:     types.InstanceTypeT2Micro,
 		KeyName:          &k3scfg.key,
 		MinCount:         &one,
