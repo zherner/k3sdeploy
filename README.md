@@ -17,13 +17,21 @@ cluster on private subnets.
 # How it works
 The latest Amazon2 linux AMI is determined and used to create the given number of instances spread over the given number of subnets using the provisioning key specified. A bastion instance is created with an IPv4 address that is used to SSH proxy for configuration of K3s cluster and for SSH tunneling to the cluster main node for `kubectl` commands.
 
-# Example usage
+# How to use k3sdeploy
+First either download binary or build from source:
+
+- Download the binary from the [release page](https://github.com/zherner/k3sdeploy/releases).
+
+or
 
 - Clone the repo: `git clone https://github.com/zherner/k3sdeploy.git`
-- In the repo dir `go install -v ./...`
-- Create cluster: `cd $GOPATH/bin && k3sdeploy -c 3 -n my-k3s-cluster-name -k /path/to/ec2/private/key.pem -s subnet-12345,subnet-45567`
+- In the repo dir: `make`
+- cd $GOPATH/bin
+
+Then:
+- Create cluster: `k3sdeploy -c 3 -n my-k3s-cluster-name -k /path/to/ec2/private/key.pem -s subnet-12345,subnet-45567`
 - SSH tunnel via the command given by the tool: `ssh -NT -L 6443:<cluster-main-private-ip>:6443 ec2-user@<bastion-public-ip>`
-- Use the cluster: see section below [How to use cluster](#how-to-use-cluster)
+- Use the cluster: see section below [How to use cluster](#how-to-use-cluster).
 
 # How to use cluster
 - Ensure SSH tunnel command is running.
