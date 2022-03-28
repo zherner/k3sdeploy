@@ -25,8 +25,13 @@ First either download binary or build from source:
 or
 
 - Clone the repo: `git clone https://github.com/zherner/k3sdeploy.git`
-- In the repo dir: `make`
+- In the repo dir: `make install`
 - cd $GOPATH/bin
+
+or
+
+- Clone the repo: `git clone https://github.com/zherner/k3sdeploy.git`
+- In the repo dir: `make build`
 
 Then:
 - Create cluster: `k3sdeploy -c 3 -n my-k3s-cluster-name -k /path/to/ec2/private/key.pem -s subnet-12345,subnet-45567`
