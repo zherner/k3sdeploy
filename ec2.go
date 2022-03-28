@@ -424,7 +424,10 @@ func createCluster(awscfg aws.Config, k3scfg *cfg) {
 		}
 	}
 
-	fmt.Println("Run the following to SSH forward via the bastion to the K3s cluster main.")
+	fmt.Println("Run the following in one terminal to SSH forward via the bastion to the K3s cluster main.")
 	fmt.Printf("\nssh -NT -L 6443:%s:6443 ec2-user@%s\n", ipClusterMain, ipBastion)
-	fmt.Println("Run 'KUBECONIFG=./k3s_kubeconfig kubectl get ns' to get started.")
+	fmt.Println("In another terminal run")
+	fmt.Println("Run 'KUBECONIFG=./k3s_kubeconfig kubectl config view' to get started.")
+	fmt.Println("or")
+	fmt.Println("Run 'kubectl --kubeconfig ./k3s_kubeconfig config view' to get started.")
 }
